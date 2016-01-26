@@ -1,7 +1,6 @@
 package httpd
 
 import (
-	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"errors"
@@ -394,99 +393,11 @@ func (h *Handler) serveWrite(w http.ResponseWriter, r *http.Request, user *meta.
 		h.Logger.Printf("write body received by handler: %s", string(b))
 	}
 
-	if r.Header.Get("Content-Type") == "application/json" {
-		h.serveWriteJSON(w, r, b, user)
-		return
-	}
 	h.serveWriteLine(w, r, b, user)
-}
-
-// serveWriteJSON receives incoming series data in JSON and writes it to the database.
-func (h *Handler) serveWriteJSON(w http.ResponseWriter, r *http.Request, body []byte, user *meta.UserInfo) {
-	var bp client.BatchPoints
-	var dec *json.Decoder
-
-	dec = json.NewDecoder(bytes.NewReader(body))
-
-	if err := dec.Decode(&bp); err != nil {
-		if err.Error() == "EOF" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		resultError(w, influxql.Result{Err: err}, http.StatusBadRequest)
-		return
-	}
-
-	if bp.Database == "" {
-		resultError(w, influxql.Result{Err: fmt.Errorf("database is required")}, http.StatusBadRequest)
-		return
-	}
-
-	if di, err := h.MetaClient.Database(bp.Database); err != nil {
-		resultError(w, influxql.Result{Err: fmt.Errorf("metastore database error: %s", err)}, http.StatusInternalServerError)
-		return
-	} else if di == nil {
-		resultError(w, influxql.Result{Err: fmt.Errorf("database not found: %q", bp.Database)}, http.StatusNotFound)
-		return
-	}
-
-	if h.requireAuthentication && user == nil {
-		resultError(w, influxql.Result{Err: fmt.Errorf("user is required to write to database %q", bp.Database)}, http.StatusUnauthorized)
-		return
-	}
-
-	if h.requireAuthentication && !user.Authorize(influxql.WritePrivilege, bp.Database) {
-		resultError(w, influxql.Result{Err: fmt.Errorf("%q user is not authorized to write to database %q", user.Name, bp.Database)}, http.StatusUnauthorized)
-		return
-	}
-
-	points, err := NormalizeBatchPoints(bp)
-	if err != nil {
-		resultError(w, influxql.Result{Err: err}, http.StatusBadRequest)
-		return
-	}
-
-	// Convert the json batch struct to a points writer struct
-	if err := h.PointsWriter.WritePoints(&cluster.WritePointsRequest{
-		Database:         bp.Database,
-		RetentionPolicy:  bp.RetentionPolicy,
-		ConsistencyLevel: cluster.ConsistencyLevelOne,
-		Points:           points,
-	}); err != nil {
-		h.statMap.Add(statPointsWrittenFail, int64(len(points)))
-		if influxdb.IsClientError(err) {
-			resultError(w, influxql.Result{Err: err}, http.StatusBadRequest)
-		} else {
-			resultError(w, influxql.Result{Err: err}, http.StatusInternalServerError)
-		}
-		return
-	}
-	h.statMap.Add(statPointsWrittenOK, int64(len(points)))
-
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // serveWriteLine receives incoming series data in line protocol format and writes it to the database.
 func (h *Handler) serveWriteLine(w http.ResponseWriter, r *http.Request, body []byte, user *meta.UserInfo) {
-	// Some clients may not set the content-type header appropriately and send JSON with a non-json
-	// content-type.  If the body looks JSON, try to handle it as as JSON instead
-	if len(body) > 0 {
-		var i int
-		for {
-			// JSON requests must start w/ an opening bracket
-			if body[i] == '{' {
-				h.serveWriteJSON(w, r, body, user)
-				return
-			}
-
-			// check that the byte is in the standard ascii code range
-			if body[i] > 32 || i >= len(body)-1 {
-				break
-			}
-			i++
-		}
-	}
-
 	precision := r.FormValue("precision")
 	if precision == "" {
 		precision = "n"
@@ -910,50 +821,4 @@ func (r *Response) Error() error {
 		}
 	}
 	return nil
-}
-
-// NormalizeBatchPoints returns a slice of Points, created by populating individual
-// points within the batch, which do not have times or tags, with the top-level
-// values.
-func NormalizeBatchPoints(bp client.BatchPoints) ([]models.Point, error) {
-	points := []models.Point{}
-	for _, p := range bp.Points {
-		if p.Time.IsZero() {
-			if bp.Time.IsZero() {
-				p.Time = time.Now()
-			} else {
-				p.Time = bp.Time
-			}
-		}
-		if p.Precision == "" && bp.Precision != "" {
-			p.Precision = bp.Precision
-		}
-		p.Time = client.SetPrecision(p.Time, p.Precision)
-		if len(bp.Tags) > 0 {
-			if p.Tags == nil {
-				p.Tags = make(map[string]string)
-			}
-			for k := range bp.Tags {
-				if p.Tags[k] == "" {
-					p.Tags[k] = bp.Tags[k]
-				}
-			}
-		}
-
-		if p.Measurement == "" {
-			return points, fmt.Errorf("missing measurement")
-		}
-
-		if len(p.Fields) == 0 {
-			return points, fmt.Errorf("missing fields")
-		}
-		// Need to convert from a client.Point to a influxdb.Point
-		pt, err := models.NewPoint(p.Measurement, p.Tags, p.Fields, p.Time)
-		if err != nil {
-			return points, err
-		}
-		points = append(points, pt)
-	}
-
-	return points, nil
 }

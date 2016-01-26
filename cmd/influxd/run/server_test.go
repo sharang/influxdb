@@ -346,31 +346,6 @@ func TestServer_UserCommands(t *testing.T) {
 	}
 }
 
-// Ensure the server can create a single point via json protocol and read it back.
-func TestServer_Write_JSON(t *testing.T) {
-	t.Parallel()
-	s := OpenServer(NewConfig(), "")
-	defer s.Close()
-
-	if err := s.CreateDatabaseAndRetentionPolicy("db0", newRetentionPolicyInfo("rp0", 1, 1*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-
-	now := now()
-	if res, err := s.Write("", "", fmt.Sprintf(`{"database" : "db0", "retentionPolicy" : "rp0", "points": [{"measurement": "cpu", "tags": {"host": "server02"},"fields": {"value": 1.0}}],"time":"%s"} `, now.Format(time.RFC3339Nano)), nil); err != nil {
-		t.Fatal(err)
-	} else if exp := ``; exp != res {
-		t.Fatalf("unexpected results\nexp: %s\ngot: %s\n", exp, res)
-	}
-
-	// Verify the data was written.
-	if res, err := s.Query(`SELECT * FROM db0.rp0.cpu GROUP BY *`); err != nil {
-		t.Fatal(err)
-	} else if exp := fmt.Sprintf(`{"results":[{"series":[{"name":"cpu","tags":{"host":"server02"},"columns":["time","value"],"values":[["%s",1]]}]}]}`, now.Format(time.RFC3339Nano)); exp != res {
-		t.Fatalf("unexpected results\nexp: %s\ngot: %s\n", exp, res)
-	}
-}
-
 // Ensure the server can create a single point via line protocol with float type and read it back.
 func TestServer_Write_LineProtocol_Float(t *testing.T) {
 	t.Parallel()
