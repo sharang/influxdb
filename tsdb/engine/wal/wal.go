@@ -381,7 +381,7 @@ func (l *Log) readMetadataFile(fileName string) ([]*seriesAndFields, error) {
 			return nil, err
 		}
 
-		dataLength := btou64(length)
+		dataLength := binary.BigEndian.Uint64(length)
 		if dataLength == 0 {
 			break
 		}
@@ -435,16 +435,18 @@ func (l *Log) writeSeriesAndFields(fields map[string]*tsdb.MeasurementFields, se
 	if err != nil {
 		return err
 	}
-	cb := snappy.Encode(nil, b)
+
+	// gather the write data in a single slice
+	buf := make([]byte, 8+snappy.MaxEncodedLen(len(b)))
+	cb := snappy.Encode(buf[8:], b)
+	binary.BigEndian.PutUint64(buf[:8], uint64(len(cb)))
+	// re-slice to actual used length
+	buf = buf[:8+len(cb)]
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if _, err := l.metaFile.Write(u64tob(uint64(len(cb)))); err != nil {
-		return err
-	}
-
-	if _, err := l.metaFile.Write(cb); err != nil {
+	if _, err := l.metaFile.Write(buf); err != nil {
 		return err
 	}
 
@@ -832,6 +834,8 @@ func (p *Partition) Write(points []models.Point) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	var lenBuf [8]byte
+
 	remainingPoints := points
 	for len(remainingPoints) > 0 {
 		block := bytes.NewBuffer(p.buf[:0])
@@ -860,16 +864,13 @@ func (p *Partition) Write(points []models.Point) error {
 			}
 		}
 
-		if n, err := p.currentSegmentFile.Write(u64tob(uint64(len(b)))); err != nil {
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(b)))
+		if _, err := p.currentSegmentFile.Write(lenBuf[:]); err != nil {
 			return err
-		} else if n != 8 {
-			return fmt.Errorf("expected to write %d bytes but wrote %d", 8, n)
 		}
 
-		if n, err := p.currentSegmentFile.Write(b); err != nil {
+		if _, err := p.currentSegmentFile.Write(b); err != nil {
 			return err
-		} else if n != len(b) {
-			return fmt.Errorf("expected to write %d bytes but wrote %d", len(b), n)
 		}
 
 		p.currentSegmentSize += int64(8 + len(b))
@@ -1334,7 +1335,7 @@ func (s *segment) readCompressedBlock() (name string, entries []*entry, err erro
 		s.length[0], s.length[1] = 0x00, 0x00
 	}
 
-	dataLength := btou64(s.length)
+	dataLength := binary.BigEndian.Uint64(s.length)
 
 	// make sure we haven't hit the end of data. trailing end of file can be zero bytes
 	if dataLength == 0 {
@@ -1439,11 +1440,12 @@ func (c *cursor) Ascending() bool { return c.ascending }
 
 // Seek will point the cursor to the given time (or key)
 func (c *cursor) SeekTo(seek int64) (key int64, value interface{}) {
-	seekBytes := u64tob(uint64(seek))
+	var seekBytes [8]byte
+	binary.BigEndian.PutUint64(seekBytes[:], uint64(seek))
 
 	// Seek cache index
 	c.position = sort.Search(len(c.cache), func(i int) bool {
-		return bytes.Compare(c.cache[i][0:8], seekBytes) != -1
+		return bytes.Compare(c.cache[i][0:8], seekBytes[:]) != -1
 	})
 
 	// If seek is not in the cache, return the last value in the cache
@@ -1581,21 +1583,10 @@ func UnmarshalEntry(buf []byte) (timestamp int64, data []byte) {
 	return
 }
 
-// u64tob converts a uint64 into an 8-byte slice.
-func u64tob(v uint64) []byte {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, v)
-	return b
-}
-
-func btou64(b []byte) uint64 {
-	return binary.BigEndian.Uint64(b)
-}
-
 // DecodeKeyValue decodes the key and value from bytes.
 func DecodeKeyValue(fields []string, dec *tsdb.FieldCodec, k, v []byte) (key int64, value interface{}) {
 	// Convert key to a timestamp.
-	key = int64(btou64(k[0:8]))
+	key = int64(binary.BigEndian.Uint64(k[0:8]))
 
 	// Decode values. Optimize for single field.
 	switch len(fields) {

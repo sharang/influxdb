@@ -239,7 +239,7 @@ func TestWAL_CorruptDataBlock(t *testing.T) {
 	// now write junk data and ensure that we can close, re-open and read
 
 	f := log.partition.currentSegmentFile
-	f.Write(u64tob(23))
+	f.Write([]byte{0, 0, 0, 0, 0, 0, 0, 23}) // big-endian 64-bit encoding of 23
 	// now write a bunch of garbage
 	for i := 0; i < 1000; i++ {
 		f.Write([]byte{0x23, 0x78, 0x11, 0x33})
