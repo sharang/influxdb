@@ -194,9 +194,9 @@ func parsePoint(buf []byte, defaultTime time.Time, precision string) (Point, err
 	}
 
 	// at least one field is required
-	if len(fields) == 0 {
-		return nil, fmt.Errorf("missing fields")
-	}
+	// if len(fields) == 0 {
+	// 	return nil, fmt.Errorf("missing fields")
+	// }
 
 	// scan the last block which is an optional integer timestamp
 	pos, ts, err := scanTime(buf, pos)
@@ -566,99 +566,201 @@ func isFieldEscapeChar(b byte) bool {
 func scanFields(buf []byte, i int) (int, []byte, error) {
 	start := skipWhitespace(buf, i)
 	i = start
-	quoted := false
 
-	// tracks how many '=' we've seen
-	equals := 0
+	var (
+		isValue bool
+		escaped bool
+	)
 
-	// tracks how many commas we've seen
-	commas := 0
+	// No fields
+	if start >= len(buf) {
+		return i, buf, fmt.Errorf("missing fields")
+	}
 
 	for {
-		// reached the end of buf?
-		if i >= len(buf) {
-			break
-		}
-
-		// escaped characters?
-		if buf[i] == '\\' && i+1 < len(buf) {
-			i += 2
-			continue
-		}
-
-		// If the value is quoted, scan until we get to the end quote
-		// Only quote values in the field value since quotes are not significant
-		// in the field key
-		if buf[i] == '"' && equals > commas {
-			quoted = !quoted
+		// We hit an unescaped equals in a field key.
+		if buf[i] == '=' && !escaped && !isValue {
+			// Switch to field value.
+			isValue = true
 			i++
 			continue
 		}
 
-		// If we see an =, ensure that there is at least on char before and after it
-		if buf[i] == '=' && !quoted {
-			equals++
-
-			// check for "... =123" but allow "a\ =123"
-			if buf[i-1] == ' ' && buf[i-2] != '\\' {
-				return i, buf[start:i], fmt.Errorf("missing field key")
+		// In the field key.
+		if !isValue {
+			if buf[i] == '\\' && !escaped {
+				escaped = true
+				i++
+				continue
 			}
 
-			// check for "...a=123,=456" but allow "a=123,a\,=456"
-			if buf[i-1] == ',' && buf[i-2] != '\\' {
-				return i, buf[start:i], fmt.Errorf("missing field key")
+			if !escaped && buf[i] != '\\' && buf[i] != ',' && buf[i] != ' ' {
+				return i, buf[start:i], fmt.Errorf("invalid escape sequence")
 			}
 
-			// check for "... value="
-			if i+1 >= len(buf) {
-				return i, buf[start:i], fmt.Errorf("missing field value")
+			// Handle rest of cases....
+			if !escaped && (buf[i] == ' ' || buf[i] == ',') {
+				return i, buf[start:i], fmt.Errorf("invalid field format")
 			}
 
-			// check for "... value=,value2=..."
-			if buf[i+1] == ',' || buf[i+1] == ' ' {
-				return i, buf[start:i], fmt.Errorf("missing field value")
+			if escaped {
+				escaped = false
+			}
+		} else {
+			// End of overall field block.
+			if buf[i] == ' ' {
+				return i, buf[start:i], nil
+			} else if buf[i] == ',' {
+				// Switch to next field key.
+				isValue = false
+				i++
+				continue
 			}
 
-			if isNumeric(buf[i+1]) || buf[i+1] == '-' || buf[i+1] == 'N' || buf[i+1] == 'n' {
+			// Is the field value a number?
+			if isNumeric(buf[i]) || buf[i] == '-' {
 				var err error
-				i, err = scanNumber(buf, i+1)
+				i, err = scanNumber(buf, i)
 				if err != nil {
 					return i, buf[start:i], err
 				}
+
+				isValue = false
+				i++
 				continue
 			}
-			// If next byte is not a double-quote, the value must be a boolean
-			if buf[i+1] != '"' {
-				var err error
-				i, _, err = scanBoolean(buf, i+1)
-				if err != nil {
-					return i, buf[start:i], err
+
+			// Is the field value a string?
+			if buf[i] == '"' {
+				// String field value, scan to end of value.
+				var escaped bool
+				i++
+				for {
+					if i >= len(buf) {
+						return i, buf[start:i], fmt.Errorf("unbalanced quotes")
+					}
+
+					if buf[i] == '\\' {
+						escaped = true
+						i++
+						continue
+					}
+
+					if buf[i] == '"' && !escaped {
+						isValue = false
+						break
+					}
+					i++
 				}
+				i++
+				isValue = false
 				continue
 			}
+
+			// Value must be a boolean.
+			var err error
+			i, _, err = scanBoolean(buf, i)
+			if err != nil {
+				return i, buf[start:i], err
+			}
+			isValue = false
+			i++
 		}
-
-		if buf[i] == ',' && !quoted {
-			commas++
-		}
-
-		// reached end of block?
-		if buf[i] == ' ' && !quoted {
-			break
-		}
-		i++
 	}
+	return i, nil, nil
+	// quoted := false
 
-	if quoted {
-		return i, buf[start:i], fmt.Errorf("unbalanced quotes")
-	}
+	// // tracks how many '=' we've seen
+	// equals := 0
 
-	// check that all field sections had key and values (e.g. prevent "a=1,b"
-	if equals == 0 || commas != equals-1 {
-		return i, buf[start:i], fmt.Errorf("invalid field format")
-	}
+	// // tracks how many commas we've seen
+	// commas := 0
 
-	return i, buf[start:i], nil
+	// for {
+	// 	// reached the end of buf?
+	// 	if i >= len(buf) {
+	// 		break
+	// 	}
+
+	// 	// escaped characters?
+	// 	if buf[i] == '\\' && i+1 < len(buf) {
+	// 		i += 2
+	// 		continue
+	// 	}
+
+	// 	// If the value is quoted, scan until we get to the end quote
+	// 	// Only quote values in the field value since quotes are not significant
+	// 	// in the field key
+	// 	if buf[i] == '"' && equals > commas {
+	// 		quoted = !quoted
+	// 		i++
+	// 		continue
+	// 	}
+
+	// 	// If we see an =, ensure that there is at least on char before and after it
+	// 	if buf[i] == '=' && !quoted {
+	// 		equals++
+
+	// 		// check for "... =123" but allow "a\ =123"
+	// 		if buf[i-1] == ' ' && buf[i-2] != '\\' {
+	// 			return i, buf[start:i], fmt.Errorf("missing field key")
+	// 		}
+
+	// 		// check for "...a=123,=456" but allow "a=123,a\,=456"
+	// 		if buf[i-1] == ',' && buf[i-2] != '\\' {
+	// 			return i, buf[start:i], fmt.Errorf("missing field key")
+	// 		}
+
+	// 		// check for "... value="
+	// 		if i+1 >= len(buf) {
+	// 			return i, buf[start:i], fmt.Errorf("missing field value")
+	// 		}
+
+	// 		// check for "... value=,value2=..."
+	// 		if buf[i+1] == ',' || buf[i+1] == ' ' {
+	// 			return i, buf[start:i], fmt.Errorf("missing field value")
+	// 		}
+
+	// 		if isNumeric(buf[i+1]) || buf[i+1] == '-' || buf[i+1] == 'N' || buf[i+1] == 'n' {
+	// 			var err error
+	// 			i, err = scanNumber(buf, i+1)
+	// 			if err != nil {
+	// 				return i, buf[start:i], err
+	// 			}
+	// 			continue
+	// 		}
+	// 		// If next byte is not a double-quote, the value must be a boolean
+	// 		if buf[i+1] != '"' {
+	// 			var err error
+	// 			i, _, err = scanBoolean(buf, i+1)
+	// 			if err != nil {
+	// 				return i, buf[start:i], err
+	// 			}
+	// 			continue
+	// 		}
+	// 	}
+
+	// 	if buf[i] == ',' && !quoted {
+	// 		commas++
+	// 	}
+
+	// 	// reached end of block?
+	// 	if buf[i] == ' ' && !quoted {
+	// 		break
+	// 	}
+	// 	i++
+	// }
+
+	// if quoted {
+	// 	return i, buf[start:i], fmt.Errorf("unbalanced quotes")
+	// }
+
+	// // check that all field sections had key and values (e.g. prevent "a=1,b"
+	// if equals == 0 || commas != equals-1 {
+	// 	return i, buf[start:i], fmt.Errorf("invalid field format")
+	// }
+
+	// return i, buf[start:i], nil
 }
 
 // scanTime scans buf, starting at i for the time section of a point.  It returns
