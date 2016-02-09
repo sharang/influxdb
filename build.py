@@ -54,6 +54,7 @@ MAINTAINER = "support@influxdb.com"
 VENDOR = "InfluxData"
 DESCRIPTION = "Distributed time-series database."
 
+go_vet_command = ["go", "tool", "vet", "-composites=true", "./"]
 prereqs = [ 'git', 'go' ]
 optional_prereqs = [ 'gvm', 'fpm', 'rpmbuild' ]
 
@@ -191,6 +192,12 @@ def create_temp_dir(prefix = None):
 
 def get_current_version_tag():
     version = run("git describe --always --tags --abbrev=0").strip()
+    return version
+
+def get_current_version():
+    version_tag = get_current_version_tag()
+    # Remove leading 'v' and possible '-rc\d+'
+    version = re.sub(r'-rc\d+', '', version_tag[1:])
     return version
 
 def get_current_rc():
@@ -336,7 +343,7 @@ def run_tests(race, parallel, timeout, no_vet):
         print err
         return False
     if not no_vet:
-        p = subprocess.Popen(["go", "tool", "vet", "-composites=true", "./"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(go_vet_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate()
         if len(out) > 0 or len(err) > 0:
             print "Go vet failed. Please run 'go vet ./...' and fix any errors."
@@ -406,7 +413,7 @@ def build(version=None,
         arch = '386'
     elif arch == 'x86_64':
         arch = 'amd64'
-    
+
     print "Starting build..."
     tmp_build_dir = create_temp_dir()
     for b, c in targets.iteritems():
@@ -459,36 +466,45 @@ def copy_file(fr, to):
     except OSError as e:
         print e
 
-def go_get(branch, update=False):
-    get_command = None
+def go_get(branch, platform=None, update=False, no_stash=False):
+    get_command = ""
+    if platform:
+        get_command = "GOOS={} ".format(platform)
+        
     if update:
-        get_command = "go get -u -f -d ./..."
+        get_command += "go get -u -f -d ./..."
     else:
-        get_command = "go get -d ./..."
+        get_command += "go get -d ./..."
 
     # 'go get' switches to master, so stash what we currently have
-    stash = run("git stash create -a").strip()
-    if len(stash) > 0:
+    changes = run("git status --porcelain").strip()
+    if len(changes) > 0:
+        if no_stash:
+            print "There are un-committed changes in your local branch, --no-stash was given, cannot continue"
+            return False
+
+        stash = run("git stash create -a").strip()
         print "There are un-committed changes in your local branch, stashing them as {}".format(stash)
         # reset to ensure we don't have any checkout issues
         run("git reset --hard")
 
         print "Retrieving Go dependencies (moving to master)..."
-        run(get_command)
+        run(get_command, shell=True)
         sys.stdout.flush()
 
         print "Moving back to branch '{}'...".format(branch)
         run("git checkout {}".format(branch))
-        
+
         print "Applying previously stashed contents..."
         run("git stash apply {}".format(stash))
     else:
         print "Retrieving Go dependencies..."
-        run(get_command)
+        run(get_command, shell=True)
 
         print "Moving back to branch '{}'...".format(branch)
         run("git checkout {}".format(branch))
-        
+    return True
+
 def generate_md5_from_file(path):
     m = hashlib.md5()
     with open(path, 'rb') as f:
@@ -511,7 +527,7 @@ def build_packages(build_output, version, pkg_arch, nightly=False, rc=None, iter
             for a in build_output[p]:
                 current_location = build_output[p][a]
                 # Create second-level directory displaying the architecture (amd64, etc)
-                build_root = os.path.join(tmp_build_dir, p, a, 'influxdb-{}-{}'.format(version, iteration))
+                build_root = os.path.join(tmp_build_dir, p, a, '{}-{}-{}'.format(PACKAGE_NAME, version, iteration))
                 # Create directory tree to mimic file system of package
                 create_dir(build_root)
                 create_package_fs(build_root)
@@ -543,13 +559,13 @@ def build_packages(build_output, version, pkg_arch, nightly=False, rc=None, iter
                             name = '{}-nightly_{}_{}'.format(name, p, a)
                         else:
                             name = '{}-{}-{}_{}_{}'.format(name, package_version, package_iteration, p, a)
-                    
+
                     if package_type == 'tar':
                         # Add `tar.gz` to path to ensure a small package size
                         current_location = os.path.join(current_location, name + '.tar.gz')
                     elif package_type == 'zip':
                         current_location = os.path.join(current_location, name + '.zip')
-                    
+
                     if rc is not None:
                         package_iteration = "0.rc{}".format(rc)
                     saved_a = a
@@ -557,7 +573,7 @@ def build_packages(build_output, version, pkg_arch, nightly=False, rc=None, iter
                         a = pkg_arch
                     if a == '386':
                         a = 'i386'
-                    
+
                     fpm_command = "fpm {} --name {} -a {} -t {} --version {} --iteration {} -C {} -p {} ".format(
                         fpm_common_args,
                         name,
@@ -628,7 +644,7 @@ def print_package_summary(packages):
 
 def main():
     global debug
-    
+
     # Command-line arguments
     outdir = "build"
     commit = None
@@ -638,7 +654,7 @@ def main():
     nightly = False
     race = False
     branch = None
-    version = get_current_version_tag()
+    version = get_current_version()
     rc = get_current_rc()
     package = False
     update = False
@@ -653,7 +669,8 @@ def main():
     run_get = True
     upload_bucket = None
     generate = False
-    
+    no_stash = False
+
     for arg in sys.argv[1:]:
         if '--outdir' in arg:
             # Output directory. If none is specified, then builds will be placed in the same directory.
@@ -685,12 +702,11 @@ def main():
         elif '--package' in arg:
             # Signifies that packages should be built.
             package = True
+            # If packaging do not allow stashing of local changes
+            no_stash = True
         elif '--nightly' in arg:
             # Signifies that this is a nightly build.
             nightly = True
-            # In order to cleanly delineate nightly version, we are adding the epoch timestamp
-            # to the version so that version numbers are always greater than the previous nightly.
-            version = "{}.n{}".format(version, int(time.time()))
         elif '--update' in arg:
             # Signifies that dependencies should be updated.
             update = True
@@ -721,6 +737,10 @@ def main():
         elif '--bucket' in arg:
             # The bucket to upload the packages to, relies on boto
             upload_bucket = arg.split("=")[1]
+        elif '--no-stash' in arg:
+            # Do not stash uncommited changes
+            # Fail if uncommited changes exist
+            no_stash = True
         elif '--generate' in arg:
             # Run go generate ./...
             # TODO - this currently does nothing for InfluxDB
@@ -739,11 +759,19 @@ def main():
     if nightly and rc:
         print "!! Cannot be both nightly and a release candidate! Stopping."
         return 1
-
+    
+    if nightly:
+        # In order to cleanly delineate nightly version, we are adding the epoch timestamp
+        # to the version so that version numbers are always greater than the previous nightly.
+        version = "{}~n{}".format(version, int(time.time()))
+        iteration = 0
+    elif rc:
+        iteration = 0
+    
     # Pre-build checks
     check_environ()
     check_prereqs()
-    
+
     if not commit:
         commit = get_current_commit(short=True)
     if not branch:
@@ -757,28 +785,23 @@ def main():
             target_arch = system_arch
     if not target_platform:
         target_platform = get_system_platform()
-    if rc or nightly:
-        # If a release candidate or nightly, set iteration to 0 (instead of 1)
-        iteration = 0
 
     if target_arch == '386':
         target_arch = 'i386'
     elif target_arch == 'x86_64':
         target_arch = 'amd64'
-    
+
     build_output = {}
 
     if generate:
         if not run_generate():
             return 1
-    
+
     if test:
         if not run_tests(race, parallel, timeout, no_vet):
             return 1
         return 0
 
-    if run_get:
-        go_get(branch, update=update)
 
     platforms = []
     single_build = True
@@ -796,6 +819,13 @@ def main():
             archs = supported_builds.get(platform)
         else:
             archs = [target_arch]
+
+        if run_get:
+            # Run 'go get' for every platform in case there are platform-specific includes
+            if not go_get(branch, platform=platform, update=update, no_stash=no_stash):
+                print "!! Cannot continue: go get failed"
+                return 1
+
         for arch in archs:
             od = outdir
             if not single_build:
@@ -827,4 +857,3 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
-
