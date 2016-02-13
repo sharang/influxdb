@@ -2,12 +2,14 @@ package tsdb
 
 import (
 	"errors"
+	"expvar"
 	"fmt"
 	"log"
 	"os"
 	"sort"
 	"time"
 
+	"github.com/influxdata/influxdb"
 	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/models"
 	"github.com/influxdata/influxdb/services/meta"
@@ -52,7 +54,15 @@ type QueryExecutor struct {
 
 	Logger          *log.Logger
 	QueryLogEnabled bool
+
+	statMap *expvar.Map
 }
+
+// Statistics for the QueryExecutor
+const (
+	statQueriesActive          = "queriesActive"   // Number of queries currently being executed
+	statQueryExecutionDuration = "queryDurationNs" // Total (wall) time spent executing queries
+)
 
 // IntoWriteRequest is a partial copy of cluster.WriteRequest
 type IntoWriteRequest struct {
@@ -64,7 +74,8 @@ type IntoWriteRequest struct {
 // NewQueryExecutor returns a new instance of QueryExecutor.
 func NewQueryExecutor() *QueryExecutor {
 	return &QueryExecutor{
-		Logger: log.New(os.Stderr, "[query] ", log.LstdFlags),
+		Logger:  log.New(os.Stderr, "[query] ", log.LstdFlags),
+		statMap: influxdb.NewStatistics("queryExecutor", "queryExecutor", nil),
 	}
 }
 
@@ -140,7 +151,12 @@ func (q *QueryExecutor) ExecuteQuery(query *influxql.Query, database string, chu
 	results := make(chan *influxql.Result)
 
 	go func() {
-		defer close(results)
+		q.statMap.Add(statQueriesActive, 1)
+		defer func(start time.Time) {
+			close(results)
+			q.statMap.Add(statQueriesActive, -1)
+			q.statMap.Add(statQueryExecutionDuration, time.Since(start).Nanoseconds())
+		}(time.Now())
 
 		var i int
 		var stmt influxql.Statement
