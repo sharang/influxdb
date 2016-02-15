@@ -141,7 +141,7 @@ func (s *Store) loadShards() error {
 				// Shard file names are numeric shardIDs
 				shardID, err := strconv.ParseUint(sh.Name(), 10, 64)
 				if err != nil {
-					s.Logger.Printf("Skipping shard: %s. Not a valid path", rp.Name())
+					s.Logger.Printf("%s is not a valid ID. Skipping shard.", sh.Name())
 					continue
 				}
 
@@ -324,6 +324,33 @@ func (s *Store) DeleteDatabase(name string, shardIDs []uint64) error {
 	delete(s.databaseIndexes, name)
 
 	return nil
+}
+
+// DeleteRetentionPolicy will close all shards associated with the
+// provided retention policy, remove the retention policy directories on
+// both the DB and WAL, and remove all shard files from disk.
+func (s *Store) DeleteRetentionPolicy(database, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Close and delete all shards under the retention policy on the
+	// database.
+	for shardID, location := range s.shardLocations {
+		if location.IsDatabase(database) && location.IsRetentionPolicy(name) {
+			// Delete the shard from disk.
+			if err := s.deleteShard(shardID); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Remove the rentention policy folder.
+	if err := os.RemoveAll(filepath.Join(s.path, database, name)); err != nil {
+		return err
+	}
+
+	// Remove the retention policy folder from the the WAL.
+	return os.RemoveAll(filepath.Join(s.EngineOptions.Config.WALDir, database, name))
 }
 
 // DeleteMeasurement removes a measurement and all associated series from a database.
