@@ -150,11 +150,9 @@ func TestQueryExecutor_ExecuteQuery_DropDatabase(t *testing.T) {
 		return &influxql.Result{}
 	}
 
-	e.Store.DeleteDatabaseFn = func(name string, shardIDs []uint64) error {
+	e.Store.DeleteDatabaseFn = func(name string) error {
 		if name != `db0` {
 			t.Fatalf("unexpected name: %s", name)
-		} else if !reflect.DeepEqual(shardIDs, []uint64{10, 20, 50, 60}) {
-			t.Fatalf("unexpected shard ids: %+v", shardIDs)
 		}
 		return nil
 	}
@@ -342,7 +340,7 @@ type QueryExecutorStore struct {
 	DatabaseIndexFn     func(name string) *tsdb.DatabaseIndex
 	ShardsFn            func(ids []uint64) []*tsdb.Shard
 	ExpandSourcesFn     func(sources influxql.Sources) (influxql.Sources, error)
-	DeleteDatabaseFn    func(name string, shardIDs []uint64) error
+	DeleteDatabaseFn    func(name string) error
 	DeleteMeasurementFn func(database, name string) error
 	DeleteSeriesFn      func(database string, seriesKeys []string) error
 }
@@ -356,8 +354,8 @@ func (s *QueryExecutorStore) Shards(ids []uint64) []*tsdb.Shard {
 func (s *QueryExecutorStore) ExpandSources(sources influxql.Sources) (influxql.Sources, error) {
 	return s.ExpandSourcesFn(sources)
 }
-func (s *QueryExecutorStore) DeleteDatabase(name string, shardIDs []uint64) error {
-	return s.DeleteDatabaseFn(name, shardIDs)
+func (s *QueryExecutorStore) DeleteDatabase(name string) error {
+	return s.DeleteDatabaseFn(name)
 }
 func (s *QueryExecutorStore) DeleteMeasurement(database, name string) error {
 	return s.DeleteMeasurementFn(database, name)

@@ -300,18 +300,20 @@ func (s *Store) deleteShard(shardID uint64) error {
 	return nil
 }
 
-// DeleteDatabase will close all shards associated with a database and remove the directory and files from disk.
-func (s *Store) DeleteDatabase(name string, shardIDs []uint64) error {
+// DeleteDatabase will close all shards associated with a database and
+// remove the directory and files from disk.
+func (s *Store) DeleteDatabase(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, id := range shardIDs {
-		shard := s.shards[id]
-		if shard != nil {
-			shard.Close()
+	// Close and delete all shards on the database.
+	for shardID, location := range s.shardLocations {
+		if location.IsDatabase(name) {
+			// Delete the shard from disk.
+			if err := s.deleteShard(shardID); err != nil {
+				return err
+			}
 		}
-		delete(s.shards, id)
-		delete(s.shardLocations, id)
 	}
 
 	if err := os.RemoveAll(filepath.Join(s.path, name)); err != nil {
@@ -322,7 +324,6 @@ func (s *Store) DeleteDatabase(name string, shardIDs []uint64) error {
 	}
 
 	delete(s.databaseIndexes, name)
-
 	return nil
 }
 

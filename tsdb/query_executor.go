@@ -23,7 +23,7 @@ type QueryExecutor struct {
 		DatabaseIndex(name string) *DatabaseIndex
 		Shards(ids []uint64) []*Shard
 		ExpandSources(sources influxql.Sources) (influxql.Sources, error)
-		DeleteDatabase(name string, shardIDs []uint64) error
+		DeleteDatabase(name string) error
 		DeleteMeasurement(database, name string) error
 		DeleteSeries(database string, seriesKeys []string) error
 	}
@@ -300,21 +300,12 @@ func (q *QueryExecutor) executeDropDatabaseStatement(stmt *influxql.DropDatabase
 		return &influxql.Result{Err: ErrDatabaseNotFound(stmt.Name)}
 	}
 
-	var shardIDs []uint64
-	for _, rp := range dbi.RetentionPolicies {
-		for _, sg := range rp.ShardGroups {
-			for _, s := range sg.Shards {
-				shardIDs = append(shardIDs, s.ID)
-			}
-		}
-	}
-
 	// Remove database from meta-store first so that in-flight writes can complete without error, but new ones will
 	// be rejected.
 	res := q.MetaClient.ExecuteStatement(stmt)
 
 	// Remove the database from the local store
-	err = q.Store.DeleteDatabase(stmt.Name, shardIDs)
+	err = q.Store.DeleteDatabase(stmt.Name)
 	if err != nil {
 		return &influxql.Result{Err: err}
 	}
