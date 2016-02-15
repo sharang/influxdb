@@ -34,8 +34,13 @@ type Store struct {
 	path string
 
 	databaseIndexes map[string]*DatabaseIndex
+
 	// shards is a map of shard IDs to Shards for *ALL DATABASES*.
 	shards map[uint64]*Shard
+
+	// shardLocations is a map of shard IDs to meta information about
+	// where the shard is located on disk.
+	shardLocations map[uint64]*shardLocation
 
 	EngineOptions EngineOptions
 	Logger        *log.Logger
@@ -70,6 +75,7 @@ func (s *Store) Open() error {
 	s.closing = make(chan struct{})
 
 	s.shards = map[uint64]*Shard{}
+	s.shardLocations = map[uint64]*shardLocation{}
 	s.databaseIndexes = map[string]*DatabaseIndex{}
 
 	s.Logger.Printf("Using data dir: %v", s.Path())
@@ -144,7 +150,9 @@ func (s *Store) loadShards() error {
 				if err != nil {
 					return fmt.Errorf("failed to open shard %d: %s", shardID, err)
 				}
+
 				s.shards[shardID] = shard
+				s.shardLocations[shardID] = &shardLocation{Database: db, RetentionPolicy: rp.Name(), Shard: shard}
 			}
 		}
 	}
@@ -170,6 +178,7 @@ func (s *Store) Close() error {
 	}
 	s.opened = false
 	s.shards = nil
+	s.shardLocations = nil
 	s.databaseIndexes = nil
 
 	return nil
@@ -252,6 +261,7 @@ func (s *Store) CreateShard(database, retentionPolicy string, shardID uint64) er
 	}
 
 	s.shards[shardID] = shard
+	s.shardLocations[shardID] = &shardLocation{Database: database, RetentionPolicy: retentionPolicy, Shard: shard}
 
 	return nil
 }
@@ -260,7 +270,12 @@ func (s *Store) CreateShard(database, retentionPolicy string, shardID uint64) er
 func (s *Store) DeleteShard(shardID uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.deleteShard(shardID)
+}
 
+// deleteShard removes a shard from disk. Callers of deleteShard need
+// to handle locks appropriately.
+func (s *Store) deleteShard(shardID uint64) error {
 	// ensure shard exists
 	sh, ok := s.shards[shardID]
 	if !ok {
@@ -280,6 +295,7 @@ func (s *Store) DeleteShard(shardID uint64) error {
 	}
 
 	delete(s.shards, shardID)
+	delete(s.shardLocations, shardID)
 
 	return nil
 }
@@ -295,6 +311,7 @@ func (s *Store) DeleteDatabase(name string, shardIDs []uint64) error {
 			shard.Close()
 		}
 		delete(s.shards, id)
+		delete(s.shardLocations, id)
 	}
 
 	if err := os.RemoveAll(filepath.Join(s.path, name)); err != nil {
@@ -565,6 +582,30 @@ func (s *Store) WriteToShard(shardID uint64, points []models.Point) error {
 	}
 
 	return sh.WritePoints(points)
+}
+
+// shardLocation is a wrapper around a shard that provides extra
+// information about which database and retention policy the shard
+// belongs to.
+//
+// shardLocation is safe for use from multiple goroutines.
+type shardLocation struct {
+	mu              sync.RWMutex
+	Database        string
+	RetentionPolicy string
+	Shard           *Shard
+}
+
+func (s *shardLocation) IsDatabase(db string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Database == db
+}
+
+func (s *shardLocation) IsRetentionPolicy(rp string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.RetentionPolicy == rp
 }
 
 // IsRetryable returns true if this error is temporary and could be retried
