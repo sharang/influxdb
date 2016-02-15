@@ -24,6 +24,7 @@ type QueryExecutor struct {
 		Shards(ids []uint64) []*Shard
 		ExpandSources(sources influxql.Sources) (influxql.Sources, error)
 		DeleteDatabase(name string) error
+		DeleteRetentionPolicy(database, name string) error
 		DeleteMeasurement(database, name string) error
 		DeleteSeries(database string, seriesKeys []string) error
 	}
@@ -200,6 +201,9 @@ func (q *QueryExecutor) ExecuteQuery(query *influxql.Query, database string, chu
 			case *influxql.DropDatabaseStatement:
 				// TODO: handle this in a cluster
 				res = q.executeDropDatabaseStatement(stmt)
+			case *influxql.DropRetentionPolicyStatement:
+				// TODO: handle this in a cluster
+				res = q.executeDropRetentionPolicy(stmt)
 			case *influxql.ShowStatsStatement, *influxql.ShowDiagnosticsStatement:
 				// Send monitor-related queries to the monitor service.
 				res = q.MonitorStatementExecutor.ExecuteStatement(stmt)
@@ -310,6 +314,23 @@ func (q *QueryExecutor) executeDropDatabaseStatement(stmt *influxql.DropDatabase
 		return &influxql.Result{Err: err}
 	}
 
+	return res
+}
+
+// executeDropRetentionPolicy closes all local shards for the retention
+// policy and remove the directory.
+func (q *QueryExecutor) executeDropRetentionPolicy(stmt *influxql.DropRetentionPolicyStatement) *influxql.Result {
+	// Check if the database and retention policy exist.
+	if _, err := q.MetaClient.RetentionPolicy(stmt.Database, stmt.Name); err != nil {
+		return &influxql.Result{Err: err}
+	}
+
+	res := q.MetaClient.ExecuteStatement(stmt)
+
+	// Remove the retention policy from the local store.
+	if err := q.Store.DeleteRetentionPolicy(stmt.Database, stmt.Name); err != nil {
+		return &influxql.Result{Err: err}
+	}
 	return res
 }
 

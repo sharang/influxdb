@@ -340,21 +340,6 @@ func (s *Store) Reopen() error {
 	return s.Open()
 }
 
-// ReopenStore closes and reopens the store as a new store.
-// func ReopenStore(s *Store) (*Store, error) {
-// 	if err := s.Store.Close(); err != nil {
-// 		return nil, err
-// 	}
-
-// 	other := &Store{Store: tsdb.NewStore(s.Path())}
-// 	other.EngineOptions = s.EngineOptions
-// 	if err := other.Open(); err != nil {
-// 		return nil, err
-// 	}
-
-// 	return other, nil
-// }
-
 // Close closes the store and removes the underlying data.
 func (s *Store) Close() error {
 	defer os.RemoveAll(s.Path())

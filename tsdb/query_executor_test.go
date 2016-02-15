@@ -337,12 +337,13 @@ func (e *QueryExecutor) MustExecuteQueryStringJSON(database string, s string) st
 
 // QueryExecutorStore is a mockable implementation of QueryExecutor.Store.
 type QueryExecutorStore struct {
-	DatabaseIndexFn     func(name string) *tsdb.DatabaseIndex
-	ShardsFn            func(ids []uint64) []*tsdb.Shard
-	ExpandSourcesFn     func(sources influxql.Sources) (influxql.Sources, error)
-	DeleteDatabaseFn    func(name string) error
-	DeleteMeasurementFn func(database, name string) error
-	DeleteSeriesFn      func(database string, seriesKeys []string) error
+	DatabaseIndexFn         func(name string) *tsdb.DatabaseIndex
+	ShardsFn                func(ids []uint64) []*tsdb.Shard
+	ExpandSourcesFn         func(sources influxql.Sources) (influxql.Sources, error)
+	DeleteDatabaseFn        func(name string) error
+	DeleteRetentionPolicyFn func(database, name string) error
+	DeleteMeasurementFn     func(database, name string) error
+	DeleteSeriesFn          func(database string, seriesKeys []string) error
 }
 
 func (s *QueryExecutorStore) DatabaseIndex(name string) *tsdb.DatabaseIndex {
@@ -356,6 +357,9 @@ func (s *QueryExecutorStore) ExpandSources(sources influxql.Sources) (influxql.S
 }
 func (s *QueryExecutorStore) DeleteDatabase(name string) error {
 	return s.DeleteDatabaseFn(name)
+}
+func (s *QueryExecutorStore) DeleteRetentionPolicy(database, name string) error {
+	return s.DeleteRetentionPolicyFn(database, name)
 }
 func (s *QueryExecutorStore) DeleteMeasurement(database, name string) error {
 	return s.DeleteMeasurementFn(database, name)
